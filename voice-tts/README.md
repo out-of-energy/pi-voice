@@ -44,6 +44,7 @@ bash install.sh
 
 工作原理：Hammerspoon 写入 `/tmp/pi-speak.ctl`，speak.ts 每 200ms 轮询响应——
 即使你切到其他应用（pi 不在前台）也能控制，因为热键是全局的。
+运行日志写入 `/tmp/pi-speak.log`（不刷 TUI 屏幕），排查问题看这里。
 
 > 没有安装 Hammerspoon 时，可手动写控制文件：`echo "stop $(date +%s%3N)" > /tmp/pi-speak.ctl`
 

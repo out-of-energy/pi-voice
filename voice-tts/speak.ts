@@ -1,5 +1,5 @@
 import { execFile, execFileSync, type ChildProcess } from "node:child_process";
-import { existsSync, readdirSync, readFileSync, rmSync, statSync, unlinkSync } from "node:fs";
+import { appendFileSync, existsSync, readdirSync, readFileSync, rmSync, statSync, unlinkSync } from "node:fs";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 /**
@@ -22,6 +22,14 @@ export default function (pi: ExtensionAPI) {
   const VOICE = process.env.PI_SPEAK_VOICE ?? "zh-CN-XiaoxiaoNeural";
   const MAX_CHUNK = Number(process.env.PI_SPEAK_MAX_CHUNK ?? 2000); // edge-tts per-request limit (可用 PI_SPEAK_MAX_CHUNK 调)
   const CTL = "/tmp/pi-speak.ctl";
+  const LOG = "/tmp/pi-speak.log";
+
+  // 日志写文件, 不打到 TUI (避免刷屏挡住对话)
+  const log = (msg: string) => {
+    try {
+      appendFileSync(LOG, `${new Date().toISOString()}  ${msg}\n`);
+    } catch { /* ignore */ }
+  };
 
   /** Strip Markdown syntax so TTS reads clean, natural text (not symbols). */
   const cleanForTTS = (text: string): string => {
@@ -116,7 +124,7 @@ export default function (pi: ExtensionAPI) {
         (err) => {
           // 被我们主动 kill(SIGKILL) 是 skip/stop 的正常行为, 不打错误日志
           if (err && !(err.signal === "SIGKILL")) {
-            console.error("[speak] edge-tts:", err.message);
+            log("edge-tts 失败: " + err.message);
           }
           if (err) resolve(null);
         }
@@ -190,10 +198,10 @@ export default function (pi: ExtensionAPI) {
       cancelled = true;
       queue = [];
       killAllAudio();
-      console.log("[speak] stop: 停止朗读, 等待下一次回复");
+      log("stop: 停止朗读, 等待下一次回复");
     } else {
       // skip: 杀掉当前段 → runQueue 循环自动播下一段; 已是最后一段则自然结束
-      console.log("[speak] skip: 跳到下一段");
+      log("skip: 跳到下一段");
       killAllAudio();
     }
   }, 200);
