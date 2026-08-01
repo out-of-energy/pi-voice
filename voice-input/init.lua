@@ -285,6 +285,28 @@ end
 -- ---------- 热键绑定 ----------
 hs.hotkey.bind({ "ctrl", "alt" }, "space", startRecording)
 
+-- ---------- 语音朗读控制 (voice-tts 配合: 打断/跳过朗读) ----------
+-- 写入 /tmp/pi-speak.ctl, 由 speak.ts 扩展轮询响应
+--   ⌃⌥K = 跳到下一段(跳到下一次要朗读的内容; 跳完即等下一次 pi 回复)
+--   ⌃⌥I = 停止朗读(清空队列, 直到下一次回复再读)
+local function speakCtl(cmd)
+  local f = io.open("/tmp/pi-speak.ctl", "w")
+  if f then
+    f:write(cmd .. " " .. string.format("%.0f", hs.timer.secondsSinceEpoch() * 1000))
+    f:close()
+  end
+end
+hs.hotkey.bind({ "ctrl", "alt" }, "k", function()
+  speakCtl("skip")
+  hs.alert.show("⏭ 跳到下一段")
+  log("speak ctl: skip")
+end)
+hs.hotkey.bind({ "ctrl", "alt" }, "i", function()
+  speakCtl("stop")
+  hs.alert.show("⏹ 停止朗读（下次回复继续）")
+  log("speak ctl: stop")
+end)
+
 -- ---------- 守护进程: 启动时拉起 + 定期保活 ----------
 if not daemonAlive() then
   spawnDaemon()

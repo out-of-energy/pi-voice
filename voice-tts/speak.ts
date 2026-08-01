@@ -1,5 +1,5 @@
-import { execFile } from "node:child_process";
-import { unlinkSync } from "node:fs";
+import { execFile, type ChildProcess } from "node:child_process";
+import { existsSync, readdirSync, readFileSync, rmSync, statSync, unlinkSync } from "node:fs";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 /**
@@ -7,13 +7,21 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
  * Reads both Chinese and English. Same engine as the OpenClaw TTS server.
  * - Override voice: PI_SPEAK_VOICE (e.g. en-US-AriaNeural)
  * - Disable: PI_SPEAK_OFF=1
+ *
+ * 朗读控制 (需求3: 打断/跳过):
+ *   长回复分段排队朗读; 通过 /tmp/pi-speak.ctl 控制:
+ *     "skip <ms>"  → 跳过当前段, 播下一段(跳到下一次要朗读的内容; 跳完即等下一次回复)
+ *     "stop <ms>"  → 停止朗读, 清空队列, 直到下一次回复再读
+ *   控制端: Hammerspoon 全局热键 (voice-input/init.lua):
+ *     ⌃⌥K = 跳到下一段    ⌃⌥I = 停止朗读
  */
 export default function (pi: ExtensionAPI) {
   if (process.env.PI_SPEAK_OFF) return;
 
   const EDGE_TTS = process.env.EDGE_TTS_BIN ?? "edge-tts"; // portable: resolve from PATH (override with EDGE_TTS_BIN=/path/to/edge-tts)
   const VOICE = process.env.PI_SPEAK_VOICE ?? "zh-CN-XiaoxiaoNeural";
-  const MAX_CHUNK = 2000; // edge-tts per-request limit
+  const MAX_CHUNK = Number(process.env.PI_SPEAK_MAX_CHUNK ?? 2000); // edge-tts per-request limit (可用 PI_SPEAK_MAX_CHUNK 调)
+  const CTL = "/tmp/pi-speak.ctl";
 
   /** Strip Markdown syntax so TTS reads clean, natural text (not symbols). */
   const cleanForTTS = (text: string): string => {
@@ -62,33 +70,122 @@ export default function (pi: ExtensionAPI) {
     return t.trim();
   };
 
-  let chain: Promise<void> = Promise.resolve();
+  // ---------------- 可中断的队列播放 ----------------
 
-  const speakChunk = (text: string) =>
-    new Promise<void>((resolve) => {
-      const tmp = `/tmp/pi-speak-${Date.now()}-${Math.random().toString(36).slice(2)}.mp3`;
-      execFile(
+  // 启动即忽略旧的 ctl 指令(防止上次会话的 stop/skip 残留把新回复静音)
+  let lastCtlStamp = Date.now();
+  // 清理崩溃/被杀残留的临时 mp3(启动时无播放任务, 安全)
+  try {
+    for (const f of readdirSync("/tmp")) {
+      if (f.startsWith("pi-speak-") && f.endsWith(".mp3")) {
+        try { rmSync("/tmp/" + f); } catch { /* ignore */ }
+      }
+    }
+  } catch { /* ignore */ }
+
+  let queue: string[] = [];              // 待朗读的段落
+  let currentChild: ChildProcess | null = null; // 正在跑的 edge-tts / afplay
+  let cancelled = false;                 // 本次(代)朗读是否被取消
+  let playing = false;                   // 播放循环是否在运行
+
+  const killCurrent = () => {
+    if (currentChild) {
+      try { currentChild.kill("SIGKILL"); } catch { /* already dead */ }
+      currentChild = null;
+    }
+  };
+
+  /** 生成一段 mp3 (edge-tts); 被杀/出错则返回 null */
+  const genChunk = (text: string, tmp: string) =>
+    new Promise<string | null>((resolve) => {
+      const p = execFile(
         EDGE_TTS,
         ["--voice", VOICE, "--text", text, "--write-media", tmp, "--write-subtitles", "/dev/null"],
-        { timeout: 60000 },
+        { timeout: 120000 },
         (err) => {
-          if (err) {
+          // 被我们主动 kill(SIGKILL) 是 skip/stop 的正常行为, 不打错误日志
+          if (err && !(err.signal === "SIGKILL")) {
             console.error("[speak] edge-tts:", err.message);
-            return resolve();
           }
-          execFile("/usr/bin/afplay", [tmp], { timeout: 300000 }, () => {
-            try { unlinkSync(tmp); } catch { /* ignore */ }
-            resolve();
-          });
+          if (err) resolve(null);
         }
       );
+      currentChild = p;
+      p.once("close", () => resolve(tmp));
     });
 
-  const speakText = (text: string) => {
+  /** 播放一段 mp3 (afplay); 被杀/出错则返回 */
+  const playChunk = (tmp: string) =>
+    new Promise<void>((resolve) => {
+      const p = execFile("/usr/bin/afplay", [tmp], { timeout: 600000 }, () => resolve());
+      currentChild = p;
+      p.once("close", () => resolve());
+    });
+
+  const runQueue = async () => {
+    if (playing) return;
+    playing = true;
+    try {
+      while (queue.length > 0 && !cancelled) {
+        const text = queue[0];
+        const tmp = `/tmp/pi-speak-${Date.now()}-${Math.random().toString(36).slice(2)}.mp3`;
+        const made = await genChunk(text, tmp);
+        // 生成结果不可用(失败/被打断的半成品) → 立即清理
+        const usable = made !== null && existsSync(tmp) && statSync(tmp).size >= 1000;
+        if (!usable) {
+          try { unlinkSync(tmp); } catch { /* ignore */ }
+        }
+        if (cancelled) break;
+        if (!usable) {
+          queue.shift();
+          continue;
+        }
+        await playChunk(tmp);
+        try { unlinkSync(tmp); } catch { /* ignore */ }
+        if (cancelled) break;
+        queue.shift(); // 这一段播完/被跳过, 进下一段
+      }
+    } finally {
+      playing = false;
+      currentChild = null;
+    }
+  };
+
+  const enqueue = (text: string) => {
     const chunks: string[] = [];
     for (let i = 0; i < text.length; i += MAX_CHUNK) chunks.push(text.slice(i, i + MAX_CHUNK));
-    chain = chain.then(() => chunks.reduce((p, c) => p.then(() => speakChunk(c)), Promise.resolve()));
+    // 新回复顶掉旧队列: 上次的还没读完(比如被跳过一段后又来了新回复), 直接换新的
+    killCurrent();
+    cancelled = false;
+    queue = chunks;
+    void runQueue();
   };
+
+  // ---------------- 控制通道: /tmp/pi-speak.ctl ----------------
+  // 格式: "skip <ms>" 或 "stop <ms>" (ms = 指令时间戳, 用于去重)
+  setInterval(() => {
+    let raw: string;
+    try {
+      raw = readFileSync(CTL, "utf8").trim();
+    } catch {
+      return; // 文件不存在 → 无指令
+    }
+    const m = raw.match(/^(skip|stop)\s+(\d+)/);
+    if (!m) return;
+    const stamp = parseInt(m[2], 10);
+    if (stamp <= lastCtlStamp) return;
+    lastCtlStamp = stamp;
+    if (m[1] === "stop") {
+      cancelled = true;
+      queue = [];
+      killCurrent();
+      console.log("[speak] stop: 停止朗读, 等待下一次回复");
+    } else {
+      // skip: 杀掉当前段 → runQueue 循环自动播下一段; 已是最后一段则自然结束
+      console.log("[speak] skip: 跳到下一段");
+      killCurrent();
+    }
+  }, 200);
 
   pi.on("agent_end", async (event, _ctx) => {
     if (event.willRetry) return; // retry will re-run; skip intermediate
@@ -108,6 +205,6 @@ export default function (pi: ExtensionAPI) {
       final = text;
       break;
     }
-    if (final) speakText(cleanForTTS(final));
+    if (final) enqueue(cleanForTTS(final));
   });
 }

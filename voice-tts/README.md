@@ -30,6 +30,22 @@ bash install.sh
 
 1. 打开 pi，输入 `/reload`（或重启 pi）
 2. 发消息 → pi 会用晓晓音色朗读**最终回复**
+3. 长回复分段朗读时，可随时打断/跳过（见下）
+
+## 朗读控制（打断 / 跳到下一段）
+
+长回复按 2000 字/段排队朗读。通过 **Hammerspoon 全局热键**控制
+（需要已安装 voice-input 模块的 Hammerspoon 配置）：
+
+| 热键 | 效果 |
+|---|---|
+| `⌃⌥K` | **跳到下一段**（当前段停止，直接读下一段；全部读完即等下一次回复） |
+| `⌃⌥I` | **停止朗读**（清空队列，直到 pi 下一次回复才再读） |
+
+工作原理：Hammerspoon 写入 `/tmp/pi-speak.ctl`，speak.ts 每 200ms 轮询响应——
+即使你切到其他应用（pi 不在前台）也能控制，因为热键是全局的。
+
+> 没有安装 Hammerspoon 时，可手动写控制文件：`echo "stop $(date +%s%3N)" > /tmp/pi-speak.ctl`
 
 ## 常用设置（环境变量）
 
@@ -38,6 +54,7 @@ bash install.sh
 | `PI_SPEAK_VOICE` | 换音色 | `zh-CN-XiaoxiaoNeural`（默认，晓晓）、`en-US-AriaNeural`（英文）、`zh-CN-YunxiNeural`（男声） |
 | `PI_SPEAK_OFF` | 临时关闭 | `1` |
 | `EDGE_TTS_BIN` | 指定 edge-tts 路径（一般不用） | `/usr/local/bin/edge-tts` |
+| `PI_SPEAK_MAX_CHUNK` | 每段最大字符数（默认 2000，改小=更快出第一句、分段更碎） | `500` |
 
 音色列表查询：`edge-tts --list-voices`
 
@@ -47,6 +64,8 @@ bash install.sh
 - ✅ 自动清理：Markdown 符号、emoji、下划线、网址链接
 - ✅ "晓晓/Xiaoxiao" 自动替换为 "我/I/My"（声音自称第一人称）
 - ✅ 长回复自动分段（2000 字/段）
+- ✅ 可打断：`⌃⌥K` 跳到下一段、`⌃⌥I` 停止朗读（Hammerspoon 全局热键，见上）
+- ✅ 新回复自动顶掉未读完的旧回复
 - ✅ 朗读失败静默跳过，不影响 pi 正常使用
 
 ## 注意
