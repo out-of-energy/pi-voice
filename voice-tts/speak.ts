@@ -61,6 +61,8 @@ export default function (pi: ExtensionAPI) {
     // table pipes -> spaces (drop separator rows)
     t = t.replace(/^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)+\|?\s*$/gm, "");
     t = t.replace(/\|/g, " ");
+    // box-drawing 制表符 (│├─┬┐┌└┘┴┤) — edge-tts 可能因此截断合成, 必须清掉
+    t = t.replace(/[\u2500-\u257F]/g, " ");
     // emoji & decorative symbols (faces, flags, dingbats, arrows, shapes...)
     t = t.replace(
       /[\u{1F000}-\u{1FAFF}\u{1F1E6}-\u{1F1FF}\u{2600}-\u{27BF}\u{2B00}-\u{2BFF}\u{2190}-\u{21FF}\u{25A0}-\u{25FF}\u{FE0F}\u{200D}\u{20E3}\u{00A9}\u{00AE}\u{2122}]/gu,
@@ -96,21 +98,21 @@ export default function (pi: ExtensionAPI) {
   } catch { /* ignore */ }
 
   let queue: string[] = [];              // 待朗读的段落
+  let chunkIndex = 0;                    // 当前段序号(日志用)
   let currentChild: ChildProcess | null = null; // 正在跑的 edge-tts / afplay
   let cancelled = false;                 // 本次(代)朗读是否被取消
   let playing = false;                   // 播放循环是否在运行
-
-  const killCurrent = () => {
-    if (currentChild) {
-      try { currentChild.kill("SIGKILL"); } catch { /* already dead */ }
-      currentChild = null;
-    }
-  };
+  let lastSpeakText = "";               // 最近一次朗读文本(去重)
+  let lastSpeakAt = 0;                   // 最近一次朗读时间
 
   // 兜底: 杀所有引用 pi-speak- 临时文件的进程(afplay/edge-tts)
   // 覆盖两种漏网: 1) 上次扩展实例 reload 后遗留的孤儿; 2) 偶发未被追踪的子进程
-  const killAllAudio = () => {
-    killCurrent();
+  const killAllAudio = (reason: string) => {
+    if (currentChild) {
+      log("杀进程: " + reason + " (currentChild)");
+      try { currentChild.kill("SIGKILL"); } catch { /* already dead */ }
+      currentChild = null;
+    }
     try { execFileSync("pkill", ["-9", "-f", "pi-speak-"]); } catch { /* none */ }
   };
 
@@ -147,6 +149,7 @@ export default function (pi: ExtensionAPI) {
     try {
       while (queue.length > 0 && !cancelled) {
         const text = queue[0];
+        log("▶ 开始第 " + (chunkIndex + 1) + "/" + queue.length + " 段 (" + text.length + " 字)");
         const tmp = `/tmp/pi-speak-${Date.now()}-${Math.random().toString(36).slice(2)}.mp3`;
         const made = await genChunk(text, tmp);
         // 生成结果不可用(失败/被打断的半成品) → 立即清理
@@ -156,14 +159,19 @@ export default function (pi: ExtensionAPI) {
         }
         if (cancelled) break;
         if (!usable) {
+          log("⚠ 第 " + (chunkIndex + 1) + " 段生成失败, 跳过");
           queue.shift();
+          chunkIndex++;
           continue;
         }
         await playChunk(tmp);
         try { unlinkSync(tmp); } catch { /* ignore */ }
         if (cancelled) break;
+        log("✓ 第 " + (chunkIndex + 1) + " 段播完");
         queue.shift(); // 这一段播完/被跳过, 进下一段
+        chunkIndex++;
       }
+      log("□ 队列结束 (剩余 " + queue.length + " 段, cancelled=" + cancelled + ")");
     } finally {
       playing = false;
       currentChild = null;
@@ -173,9 +181,11 @@ export default function (pi: ExtensionAPI) {
   const enqueue = (text: string) => {
     const chunks: string[] = [];
     for (let i = 0; i < text.length; i += MAX_CHUNK) chunks.push(text.slice(i, i + MAX_CHUNK));
+    log("入队 " + chunks.length + " 段 (" + text.length + " 字)");
     // 新回复顶掉旧队列: 上次的还没读完(比如被跳过一段后又来了新回复), 直接换新的
-    killAllAudio();
+    killAllAudio("新回复入队顶掉旧队列");
     cancelled = false;
+    chunkIndex = 0;
     queue = chunks;
     void runQueue();
   };
@@ -197,16 +207,17 @@ export default function (pi: ExtensionAPI) {
     if (m[1] === "stop") {
       cancelled = true;
       queue = [];
-      killAllAudio();
+      killAllAudio("stop");
       log("stop: 停止朗读, 等待下一次回复");
     } else {
       // skip: 杀掉当前段 → runQueue 循环自动播下一段; 已是最后一段则自然结束
-      log("skip: 跳到下一段");
-      killAllAudio();
+      log("skip: 跳到下一段 (队列剩余 " + queue.length + ")");
+      killAllAudio("skip");
     }
   }, 200);
 
   pi.on("agent_end", async (event, _ctx) => {
+    log("agent_end 事件: willRetry=" + String(event.willRetry) + ", 消息数=" + String(event.messages?.length ?? 0));
     if (event.willRetry) return; // retry will re-run; skip intermediate
 
     const messages = event.messages ?? [];
@@ -224,6 +235,19 @@ export default function (pi: ExtensionAPI) {
       final = text;
       break;
     }
-    if (final) enqueue(cleanForTTS(final));
+    log("agent_end: 最终文本 " + String(final?.length ?? 0) + " 字");
+    if (final) {
+      const cleaned = cleanForTTS(final);
+      const now = Date.now();
+      // 防重复触发: pi 可能对同一回复发多次 agent_end, 5s 内相同文本直接忽略
+      // (否则第二个事件会 killAllAudio 把正在读的朗读顶掉)
+      if (cleaned === lastSpeakText && now - lastSpeakAt < 5000) {
+        log("重复 agent_end(相同文本), 跳过");
+        return;
+      }
+      lastSpeakText = cleaned;
+      lastSpeakAt = now;
+      enqueue(cleaned);
+    }
   });
 }
