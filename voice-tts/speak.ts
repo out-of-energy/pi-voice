@@ -84,11 +84,9 @@ export default function (pi: ExtensionAPI) {
 
   // 启动即忽略旧的 ctl 指令(防止上次会话的 stop/skip 残留把新回复静音)
   let lastCtlStamp = Date.now();
-  // 清理残留: 孤儿 mp3 + 上次扩展实例遗留的 afplay/edge-tts
-  // (reload 后旧实例的子进程会变孤儿, 不杀的话 skip/stop 控制不到它们)
-  try {
-    execFileSync("pkill", ["-9", "-f", "pi-speak-"]);
-  } catch { /* 没有残留进程 */ }
+  // 清理残留 mp3 文件(安全: afplay 正在播的文件在 macOS 上删除不影响播放)
+  // 注意: 这里不 pkill 进程! 用户 /reload 时若正在朗读, 杀掉 afplay 会把朗读打断。
+  // 孤儿进程(reload/崩溃遗留)由 skip/stop/新回复的 killAllAudio(pkill 兜底)处理。
   try {
     for (const f of readdirSync("/tmp")) {
       if (f.startsWith("pi-speak-") && f.endsWith(".mp3")) {
