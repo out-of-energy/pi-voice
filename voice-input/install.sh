@@ -54,10 +54,15 @@ else
   command -v pipx >/dev/null 2>&1 && pipx ensurepath || true
 fi
 
-# ---------- 3.5 socks 代理兼容 ----------
+# ---------- 3.5 SOCKS 代理兼容 ----------
 echo ""
 echo "[3.5] SOCKS 代理兼容处理..."
 pipx runpip mlx-whisper install socksio 2>/dev/null && echo "      ✅ socksio 已装" || true
+
+# ---------- 3.6 WebRTC VAD (人声检测) ----------
+echo ""
+echo "[3.6] 安装 WebRTC VAD (人声检测)..."
+pipx runpip mlx-whisper install webrtcvad-wheels 2>/dev/null && echo "      ✅ webrtcvad 已装" || echo "      ⚠️ webrtcvad 安装失败, 语音输入将无法自动停止"
 
 # ---------- 4. 复制配置并启动 ----------
 echo ""
@@ -65,6 +70,7 @@ echo "[4/4] 安装配置..."
 mkdir -p "$HOME/.hammerspoon"
 cp "$(dirname "$0")/init.lua" "$HOME/.hammerspoon/init.lua"
 cp "$(dirname "$0")/whisper_daemon.py" "$HOME/.hammerspoon/whisper_daemon.py"
+cp "$(dirname "$0")/vad_recorder.py" "$HOME/.hammerspoon/vad_recorder.py"
 echo "      ✅ 已安装到 ~/.hammerspoon/ (init.lua + whisper_daemon.py)"
 open -a Hammerspoon 2>/dev/null || true
 

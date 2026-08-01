@@ -11,6 +11,7 @@
 | 文件 | 作用 |
 |---|---|
 | `init.lua` | Hammerspoon 配置（热键、录音、自动停止、转写、输入） |
+| `vad_recorder.py` | WebRTC VAD 人声检测录音器（替代 silencedetect 音量阈值） |
 | `whisper_daemon.py` | Whisper 常驻转写守护进程（模型加载一次，循环服务） |
 | `install.sh` | 一键安装脚本 |
 | `README.md` | 本说明 |
@@ -18,7 +19,8 @@
 ## 工作原理
 
 ```
-⌃⌥Space → ffmpeg 录音(avfoundation) → 静音检测自动停止(0.8s)
+⌃⌥Space → vad_recorder.py 录音(WebRTC VAD 人声检测)
+        → 连续 0.9s 检测到人声才开始录(带预卷) → 说完静音 0.8s 自动停止
         → 守护进程(whisper_daemon.py, 模型常驻内存) 转写
           └─ 守护进程不可用时自动回退 CLI (mlx_whisper)
         → 文字自动输入当前应用
@@ -44,7 +46,8 @@ bash install.sh
 
 （或直接运行仓库根目录的 `bash install.sh` 一次性安装输入 + 输出）
 
-脚本自动安装：Hammerspoon、ffmpeg、mlx-whisper（+ SOCKS 代理兼容）。
+脚本自动安装：Hammerspoon、ffmpeg、mlx-whisper（+ SOCKS 代理兼容）、
+webrtcvad（`pipx runpip mlx-whisper install webrtcvad-wheels`，VAD 人声检测用）。
 
 ## 必须手动授权（安装后）
 
@@ -62,16 +65,22 @@ bash install.sh
 | 按 `⌃⌥Space` | 开始录音（屏幕提示"🎙 录音中…"） |
 | 说话后停顿 0.8 秒 | 自动停止 → "⏳ 转写中…" → 文字自动输入 |
 | 再按一次 `⌃⌥Space` | 取消本次录音 |
+| 没说话（6 秒内无人声） | 自动取消，提示"没听到声音" |
+| 咳嗽/环境声（语音过短） | 自动丢弃，不转写 |
 
 ## 配置（编辑 `~/.hammerspoon/init.lua`）
 
 | 参数 | 默认 | 说明 |
 |---|---|---|
 | `LANG` | `"auto"` | 语言：`auto` 自动 / `"zh"` 强制中文（中英混说推荐） |
-| 静音阈值 | `-30dB` | 说话小声可改 `-35dB` |
-| 静音时长 | `d=0.8` | 停顿多久算说完 |
-| 最长录音 | `-t 25` | 25 秒硬上限 |
-| 无语音提前终止 | `NO_SPEECH_ABORT_SEC=6` | 录音开始 6s 内未检测到任何语音（没对准麦/太轻/环境噪声低于阈值）自动终止并提示，避免傻等满 25s |
+| 人声识别 | WebRTC VAD (aggress=2) | 识别"人声特征"而非音量：轻声可识别、电视/音乐/键盘不易误触发 |
+| 开始判定 | 连续 0.9s 有人声 | 连续 3 个 0.3s 窗口各 ≥6/10 语音帧才算开始说话 |
+| 停止判定 | 静音 0.8s | 停顿多久算说完（`TAIL_MS`，vad_recorder.py 内） |
+| 最长录音 | 15s | `MAX_SEC`，vad_recorder.py 内 |
+| 无语音取消 | 6s | 录音开始 6s 内未检测到人声自动取消 |
+| 语音过短 | <0.45s 丢弃 | 疑似咳嗽/环境声，不转写 |
+
+> 不再需要手动调静音阈值（`silencedetect noise=XXdB`）——VAD 按波形特征判别，与音量无关。
 
 ## 故障排查
 
@@ -82,6 +91,7 @@ bash install.sh
 | 转写失败/找不到模型 | 首次使用需联网下载模型（~1.6GB） |
 | SOCKS 代理报错 | 已自动装 socksio；或运行 `pipx runpip mlx-whisper install socksio` |
 | 中英混说丢语言 | `LANG = "zh"` |
+| 键盘声误触发 | 连续敲击可能被当作说话；出现时再按一次 `⌃⌥Space` 取消 |
 
 ## 要求
 

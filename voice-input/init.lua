@@ -1,17 +1,17 @@
 -- ============================================================
 --  Whisper 语音输入法 (Voice Input Method)
 --  热键: ⌃⌥Space
---  录音: ffmpeg (avfoundation) + silencedetect 自动停止
+--  录音: vad_recorder.py (WebRTC VAD 人声检测, 替代 silencedetect 音量阈值)
 --  转写: Whisper 常驻守护进程 (whisper_daemon.py, 模型常驻内存)
 --        守护进程不可用时自动回退 CLI (mlx_whisper)
 --  调试日志: /tmp/pi-voice-debug.log
 --  守护日志: /tmp/pi-whisper-daemon.log
+--  VAD日志:  /tmp/pi-vad.log
 -- ============================================================
 
-local FFMPEG = "/opt/homebrew/bin/ffmpeg"
 local OUT = "/tmp/pi-voice-input.wav"
-local FFLOG = "/tmp/pi-voice-ff.log"
 local LOG = "/tmp/pi-voice-debug.log"
+local VAD_SCRIPT = os.getenv("HOME") .. "/.hammerspoon/vad_recorder.py"
 
 -- 转写语言: "auto" 自动检测 / "zh" 强制中文(中英混说推荐)
 local LANG = "auto"
@@ -25,60 +25,13 @@ local recording = false
 local transcribing = false
 local cancelled = false
 local recTask = nil
-local monTimer = nil
 local daemonPython = nil
-local recStartAt = 0          -- 本次录音开始时间(os.time)
-local everSawSpeech = false   -- 本次录音是否检测到过真实语音
-local noSpeechAbort = false   -- 因长时间无语音而提前终止
 
 local function log(msg)
   local f = io.open(LOG, "a")
   if f then
     f:write(os.date("%Y-%m-%d %H:%M:%S") .. "  " .. tostring(msg) .. "\n")
     f:close()
-  end
-end
-
--- ---------- 静音检测: 返回 (silence_start, silence_end) ----------
-local function parseSilence()
-  local s, e = nil, nil
-  local f = io.open(FFLOG, "r")
-  if f then
-    for line in f:lines() do
-      local st = line:match("silence_start: ([%d%.]+)")
-      local en = line:match("silence_end: ([%d%.]+)")
-      if st then s = st end
-      if en then e = en end
-    end
-    f:close()
-  end
-  return s, e
-end
-
--- ---------- 说完自动停止 ----------
--- 录音多久仍未检测到任何语音则提前终止
--- (防盲区: ffmpeg 对无语音输入报 silence_start: 0, 恒不满足 s>1.5, 原逻辑会傻等满 25s 硬上限)
-local NO_SPEECH_ABORT_SEC = 6
-
-local function checkSilence()
-  if not recording then return end
-  local s, e = parseSilence()
-  if s then
-    -- 静音在 1.5s 后才开始 => 之前有过声音, 记下"检测到语音"
-    if tonumber(s) > 1.5 then everSawSpeech = true end
-    local lastIsSilence = true
-    if e and tonumber(e) > tonumber(s) then lastIsSilence = false end
-    if lastIsSilence and tonumber(s) > 1.5 then
-      log("auto-stop: silence_start=" .. s)
-      if recTask then recTask:terminate() end
-      return
-    end
-  end
-  -- 从未检测到语音(没对准麦/说话太轻/环境噪声低于阈值): 提前终止, 别傻等
-  if not everSawSpeech and os.time() - recStartAt >= NO_SPEECH_ABORT_SEC then
-    log("no speech in " .. NO_SPEECH_ABORT_SEC .. "s, aborting")
-    noSpeechAbort = true
-    if recTask then recTask:terminate() end
   end
 end
 
@@ -172,7 +125,6 @@ local function finishTranscribe(text, ok)
     log("no text result" .. (ok and "" or (" daemon_err=" .. tostring(text))))
   end
   os.remove(OUT)
-  os.remove(FFLOG)
   log("cleaned temp files")
 end
 
@@ -252,7 +204,6 @@ end
 
 -- ---------- 停止录音 ----------
 local function stopRecording()
-  if monTimer then monTimer:stop() monTimer = nil end
   if recTask then recTask:terminate() recTask = nil end
   recording = false
 end
@@ -261,7 +212,6 @@ local function cancelRecording()
   cancelled = true
   stopRecording()
   os.remove(OUT)
-  os.remove(FFLOG)
   hs.alert.show("❌ 已取消")
   log("cancelled")
 end
@@ -280,40 +230,56 @@ local function startRecording()
 
   recording = true
   cancelled = false
-  recStartAt = os.time()
-  everSawSpeech = false
-  noSpeechAbort = false
   os.remove(OUT)
-  os.remove(FFLOG)
   hs.alert.show("🎙 录音中… 说完自动停止")
-  log("ffmpeg: start")
+  log("vad recorder: start")
 
-  local cmd = '"' .. FFMPEG .. '" -y -loglevel info -f avfoundation -i ":0" -af "silencedetect=noise=-30dB:d=0.8" -t 25 "' .. OUT .. '" 2> "' .. FFLOG .. '"'
+  local py = findDaemonPython()
+  if not py then
+    recording = false
+    hs.alert.show("❌ 找不到 Python 环境")
+    return
+  end
+  if not fileExists(VAD_SCRIPT) then
+    recording = false
+    hs.alert.show("❌ 缺少 vad_recorder.py")
+    return
+  end
+
+  -- exec: bash 换成 python, 热键取消时 terminate 直接杀 python,
+  -- python 的 SIGTERM 处理器会顺带终止 ffmpeg, 不残留进程
+  local cmd = 'exec "' .. py .. '" "' .. VAD_SCRIPT .. '" "' .. OUT .. '"'
   recTask = hs.task.new("/bin/bash", function(exit, stdout, stderr)
     stopRecording()
-    log("ffmpeg: exit=" .. exit)
+    log("vad: exit=" .. exit)
     if cancelled then return end
-    if noSpeechAbort then
+    if exit == 2 then
       hs.alert.show("❌ 没听到声音，请重试")
-      log("no speech abort, skip transcribe")
       os.remove(OUT)
-      os.remove(FFLOG)
+      return
+    end
+    if exit == 3 then
+      hs.alert.show("🔇 声音太短，已忽略")
+      os.remove(OUT)
+      return
+    end
+    if exit ~= 0 then
+      hs.alert.show("❌ 录音出错(" .. tostring(exit) .. ")")
+      os.remove(OUT)
       return
     end
     local size = 0
     local h = io.open(OUT, "rb")
     if h then size = h:seek("end") h:close() end
-    log("ffmpeg: size=" .. size)
+    log("vad: size=" .. size)
     if size > 1000 then
       transcribe()
     else
       hs.alert.show("❌ 没录到声音")
-      log("empty recording")
+      os.remove(OUT)
     end
   end, { "-c", cmd })
   recTask:start()
-
-  monTimer = hs.timer.doEvery(0.3, checkSilence)
 end
 
 -- ---------- 热键绑定 ----------
