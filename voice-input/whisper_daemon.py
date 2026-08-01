@@ -40,6 +40,24 @@ LOG_FILE = "/tmp/pi-whisper-daemon.log"
 # 屏蔽 tqdm 进度条输出（否则会刷进日志文件）
 os.environ["TQDM_DISABLE"] = "1"
 
+# mlx_whisper 显式传 disable=verbose is not False, 不理会 TQDM_DISABLE;
+# 用 no-op 桩替换 tqdm.tqdm, 彻底去掉进度条, 同时规避 stderr/BrokenPipe 隐患
+class _NullBar:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def update(self, *a, **k):
+        pass
+
+    def close(self):
+        pass
+
+import tqdm as _tqdm
+_tqdm.tqdm = lambda *a, **k: _NullBar()
+
 logging.basicConfig(
     filename=LOG_FILE,
     level=logging.INFO,

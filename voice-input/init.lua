@@ -183,11 +183,29 @@ local function transcribeViaDaemon()
 end
 
 -- ---------- 转写路径 2: CLI 回退 (原实现) ----------
+-- 解析本地 HF 缓存中的模型快照路径 (零网络); 无缓存才回退 repo id
+local function resolveLocalModel()
+  local cacheBase = os.getenv("HOME") .. "/.cache/huggingface/hub/models--" ..
+    WHISPER_MODEL:gsub("/", "--")
+  local ref = cacheBase .. "/refs/main"
+  local f = io.open(ref, "r")
+  if f then
+    local rev = f:read("*l") or ""
+    f:close()
+    local snap = cacheBase .. "/snapshots/" .. rev
+    if rev ~= "" and fileExists(snap .. "/weights.safetensors") then
+      log("CLI 回退使用本地模型: " .. snap)
+      return snap
+    end
+  end
+  return WHISPER_MODEL
+end
+
 local function transcribeViaCLI()
   local langArg = ""
   if LANG ~= "auto" then langArg = " --language " .. LANG end
   local cmd = 'export PATH="$HOME/.local/bin:/opt/homebrew/bin:$PATH"; ' ..
-    'mlx_whisper "' .. OUT .. '" --model ' .. WHISPER_MODEL .. langArg ..
+    'mlx_whisper "' .. OUT .. '" --model ' .. resolveLocalModel() .. langArg ..
     ' -f txt --output-dir /tmp --output-name pi_voice >/dev/null 2>/tmp/pi-voice-w.err; ' ..
     'if [ -f /tmp/pi_voice.txt ]; then sed \'s/\\[[0-9:. ]*--> [0-9:. ]*\\] //g\' /tmp/pi_voice.txt; ' ..
     'echo "TTS-OK"; else echo "TTS-FAIL"; fi; ' ..
