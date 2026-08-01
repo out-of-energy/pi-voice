@@ -27,6 +27,9 @@ local cancelled = false
 local recTask = nil
 local monTimer = nil
 local daemonPython = nil
+local recStartAt = 0          -- 本次录音开始时间(os.time)
+local everSawSpeech = false   -- 本次录音是否检测到过真实语音
+local noSpeechAbort = false   -- 因长时间无语音而提前终止
 
 local function log(msg)
   local f = io.open(LOG, "a")
@@ -53,14 +56,28 @@ local function parseSilence()
 end
 
 -- ---------- 说完自动停止 ----------
+-- 录音多久仍未检测到任何语音则提前终止
+-- (防盲区: ffmpeg 对无语音输入报 silence_start: 0, 恒不满足 s>1.5, 原逻辑会傻等满 25s 硬上限)
+local NO_SPEECH_ABORT_SEC = 6
+
 local function checkSilence()
   if not recording then return end
   local s, e = parseSilence()
-  if not s then return end
-  local lastIsSilence = true
-  if e and tonumber(e) > tonumber(s) then lastIsSilence = false end
-  if lastIsSilence and tonumber(s) > 1.5 then
-    log("auto-stop: silence_start=" .. s)
+  if s then
+    -- 静音在 1.5s 后才开始 => 之前有过声音, 记下"检测到语音"
+    if tonumber(s) > 1.5 then everSawSpeech = true end
+    local lastIsSilence = true
+    if e and tonumber(e) > tonumber(s) then lastIsSilence = false end
+    if lastIsSilence and tonumber(s) > 1.5 then
+      log("auto-stop: silence_start=" .. s)
+      if recTask then recTask:terminate() end
+      return
+    end
+  end
+  -- 从未检测到语音(没对准麦/说话太轻/环境噪声低于阈值): 提前终止, 别傻等
+  if not everSawSpeech and os.time() - recStartAt >= NO_SPEECH_ABORT_SEC then
+    log("no speech in " .. NO_SPEECH_ABORT_SEC .. "s, aborting")
+    noSpeechAbort = true
     if recTask then recTask:terminate() end
   end
 end
@@ -263,6 +280,9 @@ local function startRecording()
 
   recording = true
   cancelled = false
+  recStartAt = os.time()
+  everSawSpeech = false
+  noSpeechAbort = false
   os.remove(OUT)
   os.remove(FFLOG)
   hs.alert.show("🎙 录音中… 说完自动停止")
@@ -273,6 +293,13 @@ local function startRecording()
     stopRecording()
     log("ffmpeg: exit=" .. exit)
     if cancelled then return end
+    if noSpeechAbort then
+      hs.alert.show("❌ 没听到声音，请重试")
+      log("no speech abort, skip transcribe")
+      os.remove(OUT)
+      os.remove(FFLOG)
+      return
+    end
     local size = 0
     local h = io.open(OUT, "rb")
     if h then size = h:seek("end") h:close() end
