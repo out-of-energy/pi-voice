@@ -1,4 +1,4 @@
-import { execFile, type ChildProcess } from "node:child_process";
+import { execFile, execFileSync, type ChildProcess } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, rmSync, statSync, unlinkSync } from "node:fs";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
@@ -74,7 +74,11 @@ export default function (pi: ExtensionAPI) {
 
   // 启动即忽略旧的 ctl 指令(防止上次会话的 stop/skip 残留把新回复静音)
   let lastCtlStamp = Date.now();
-  // 清理崩溃/被杀残留的临时 mp3(启动时无播放任务, 安全)
+  // 清理残留: 孤儿 mp3 + 上次扩展实例遗留的 afplay/edge-tts
+  // (reload 后旧实例的子进程会变孤儿, 不杀的话 skip/stop 控制不到它们)
+  try {
+    execFileSync("pkill", ["-9", "-f", "pi-speak-"]);
+  } catch { /* 没有残留进程 */ }
   try {
     for (const f of readdirSync("/tmp")) {
       if (f.startsWith("pi-speak-") && f.endsWith(".mp3")) {
@@ -93,6 +97,13 @@ export default function (pi: ExtensionAPI) {
       try { currentChild.kill("SIGKILL"); } catch { /* already dead */ }
       currentChild = null;
     }
+  };
+
+  // 兜底: 杀所有引用 pi-speak- 临时文件的进程(afplay/edge-tts)
+  // 覆盖两种漏网: 1) 上次扩展实例 reload 后遗留的孤儿; 2) 偶发未被追踪的子进程
+  const killAllAudio = () => {
+    killCurrent();
+    try { execFileSync("pkill", ["-9", "-f", "pi-speak-"]); } catch { /* none */ }
   };
 
   /** 生成一段 mp3 (edge-tts); 被杀/出错则返回 null */
@@ -155,7 +166,7 @@ export default function (pi: ExtensionAPI) {
     const chunks: string[] = [];
     for (let i = 0; i < text.length; i += MAX_CHUNK) chunks.push(text.slice(i, i + MAX_CHUNK));
     // 新回复顶掉旧队列: 上次的还没读完(比如被跳过一段后又来了新回复), 直接换新的
-    killCurrent();
+    killAllAudio();
     cancelled = false;
     queue = chunks;
     void runQueue();
@@ -178,12 +189,12 @@ export default function (pi: ExtensionAPI) {
     if (m[1] === "stop") {
       cancelled = true;
       queue = [];
-      killCurrent();
+      killAllAudio();
       console.log("[speak] stop: 停止朗读, 等待下一次回复");
     } else {
       // skip: 杀掉当前段 → runQueue 循环自动播下一段; 已是最后一段则自然结束
       console.log("[speak] skip: 跳到下一段");
-      killCurrent();
+      killAllAudio();
     }
   }, 200);
 
