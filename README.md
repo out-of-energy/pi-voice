@@ -59,6 +59,10 @@ bash install.sh
 | 对 pi 说 **“静音”** | 持久关闭朗读（立即生效，无需 reload，重启也保持） |
 | 对 pi 说 **“恢复朗读”** | 重新开启朗读 |
 
+## 架构
+
+见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)（Mermaid 架构图：语音输入/输出双链路 + 控制/静音旁路）
+
 ## 各模块文档
 
 - [语音输入法完整文档 → voice-input/README.md](voice-input/README.md)
