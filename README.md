@@ -3,7 +3,7 @@
 让 **pi** 拥有完整的语音对话能力：**说 → pi 理解并回复 → pi 朗读出来**。
 
 | 模块 | 功能 | 说明 |
-|---|---|---|
+| --- | --- | --- |
 | [`voice-input/`](voice-input/) | 语音**输入** | 任意应用内按热键说话 → Whisper 转写 → 文字上屏（⌃⌥Space） |
 | [`voice-tts/`](voice-tts/) | 语音**输出** | pi 回复自动用微软 TTS（晓晓）朗读 |
 
@@ -18,7 +18,9 @@ pi-voice/
 │   ├── install.sh
 │   └── README.md
 └── voice-tts/          # 语音朗读 (pi 扩展 + edge-tts 晓晓)
-    ├── speak.ts            # pi 扩展 (朗读 + 文本净化)
+    ├── speak.ts            # pi 扩展 (朗读 + 文本净化 + 静音开关)
+    ├── skills/
+    │   └── pi-voice-mute/SKILL.md   # 静音 skill (对 pi 说“静音”/“恢复朗读”)
     ├── install.sh
     └── README.md
 ```
@@ -34,6 +36,7 @@ bash install.sh
 或分开安装：`bash voice-input/install.sh` / `bash voice-tts/install.sh`。
 
 安装后需手动授权（系统设置 → 隐私与安全性）：
+
 1. **辅助功能 → Hammerspoon**（热键 + 输入文字）
 2. **麦克风 → Hammerspoon**（录音）
 
@@ -44,12 +47,14 @@ bash install.sh
 ```
 
 | 操作 | 效果 |
-|---|---|
+| --- | --- |
 | 按 `⌃⌥Space` 说话 | 说完停顿自动停止 → 文字输入当前应用 |
 | 再按一次 `⌃⌥Space` | 取消录音 |
 | pi 回复后 | 自动朗读最终答案（中英均可） |
 | `⌃⌥K` | 跳到下一段朗读（长回复快速跳过） |
 | `⌃⌥I` | 停止朗读（下次回复再读） |
+| 对 pi 说 **“静音”** | 持久关闭朗读（立即生效，无需 reload，重启也保持） |
+| 对 pi 说 **“恢复朗读”** | 重新开启朗读 |
 
 ## 各模块文档
 
@@ -58,15 +63,18 @@ bash install.sh
   - Whisper 常驻守护进程：转写 ~1.9s（优化前 ~4.6s），日志 `/tmp/pi-whisper-daemon.log`
 - [语音朗读完整文档 → voice-tts/README.md](voice-tts/README.md)
   - 晓晓音色，自动净化 Markdown/emoji，只读最终答案
+  - 静音开关：对 pi 说“静音”/“恢复朗读”，或写/删 `~/.pi/speak.mute`，无需 reload
   - 换音色：`export PI_SPEAK_VOICE=en-US-AriaNeural`
 
 ## 常见问题
 
 | 问题 | 解决 |
-|---|---|
+| --- | --- |
+| 想让 pi 别说话 | 对 pi 说“静音”；或 `echo 1 > ~/.pi/speak.mute` |
+| 想恢复朗读 | 对 pi 说“恢复朗读”；或 `rm -f ~/.pi/speak.mute` |
 | 热键没反应 | 检查辅助功能/麦克风授权；Hammerspoon 菜单栏 → Reload Config |
 | 转写慢 | 守护进程日志 `/tmp/pi-whisper-daemon.log`；`kill $(cat /tmp/pi-whisper-daemon.pid)` 后重启 Hammerspoon |
-| pi 不朗读 | pi 里 `/reload`；或 `export PI_SPEAK_OFF=1` 关闭 |
+| pi 不朗读 | pi 里 `/reload`；检查是否残留静音文件（`ls ~/.pi/speak.mute`，有则 `rm -f`） |
 | 中英混说丢语言 | `voice-input/init.lua` 里 `LANG = "zh"` |
 
 ## 技术栈
