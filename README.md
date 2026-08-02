@@ -14,6 +14,7 @@ pi-voice/
 ├── install.sh          # 一键安装全部
 ├── voice-input/        # 语音输入法 (Hammerspoon + ffmpeg + Whisper 常驻守护进程)
 │   ├── init.lua            # 热键/录音/自动停止/转写/输入
+│   ├── vad_recorder.py     # WebRTC VAD 人声检测录音 (替代 silencedetect 音量阈值)
 │   ├── whisper_daemon.py   # Whisper 常驻转写服务 (模型加载一次, 4.6s→1.9s)
 │   ├── install.sh
 │   └── README.md
