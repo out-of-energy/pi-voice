@@ -2,6 +2,8 @@
 
 让 **pi** 拥有完整的语音对话能力：**说 → pi 理解并回复 → pi 朗读出来**。
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 | 模块 | 功能 | 说明 |
 | --- | --- | --- |
 | [`voice-input/`](voice-input/) | 语音**输入** | 任意应用内按热键说话 → Whisper 转写 → 文字上屏（⌃⌥Space） |
@@ -82,3 +84,7 @@ bash install.sh
 
 - **输入**：Hammerspoon (Lua) + ffmpeg (avfoundation) + MLX Whisper (Apple Silicon)
 - **输出**：pi 扩展 (TypeScript) + edge-tts (微软在线 TTS) + afplay
+
+## License
+
+[MIT](LICENSE) © 2026 [out-of-energy](https://github.com/out-of-energy)
