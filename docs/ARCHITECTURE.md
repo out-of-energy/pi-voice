@@ -36,7 +36,7 @@ flowchart LR
     subgraph CTL["旁路控制"]
         HK2["⌃⌥K 跳到下一段<br/>⌃⌥I 停止朗读<br/>(Hammerspoon)"]
         HK2 -->|"写 /tmp/pi-speak.ctl"| AP
-        SKILL["pi-voice-mute skill<br/>说\"静音\"/\"恢复朗读\""]
+        SKILL["pi-voice-mute skill<br/>说「静音」/「恢复朗读」"]
         SKILL -->|"写/删 ~/.pi/speak.mute"| MU
     end
 
